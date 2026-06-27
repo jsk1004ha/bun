@@ -567,7 +567,7 @@ public:
                                                                                                              \
     V(public, LazyPropertyOfGlobalObject<JSObject>, m_processEnvObject)                                      \
                                                                                                              \
-    /* import.meta.hot for `bun --hot`: per-module data + dispose callbacks. */                             \
+    /* import.meta.hot for `bun --hot`: per-module data + dispose callbacks. */                              \
     V(public, WriteBarrier<JSC::JSMap>, m_importMetaHotDataMap)                                              \
     V(public, WriteBarrier<JSC::JSArray>, m_importMetaHotDisposeList)                                        \
                                                                                                              \
