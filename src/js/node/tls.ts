@@ -6,6 +6,8 @@ const EventEmitter = require("node:events");
 const addServerName = $newRustFunction("Listener.rs", "jsAddServerName", 3);
 const { throwNotImplemented } = require("internal/shared");
 const {
+  SSL_OP_CIPHER_SERVER_PREFERENCE,
+  tlsDefaults,
   throwOnInvalidTLSArray,
   tlsStringToProtocolVersion,
   secureProtocolToVersionRange,
@@ -531,8 +533,6 @@ function normalizePemKeyOption(key, ctxPassphrase) {
   });
 }
 
-const SSL_OP_CIPHER_SERVER_PREFERENCE = 0x00400000;
-
 function newNativeSecureContext(options, cached = false) {
   maybeWarnAboutExtraCACerts();
   // tls.createSecureContext() with no options still goes through the version
@@ -570,7 +570,7 @@ function newNativeSecureContext(options, cached = false) {
       options = { ...options, sessionTimeout: 0 };
     }
     if (options.ecdhCurve === undefined) {
-      options = { ...options, ecdhCurve: DEFAULT_ECDH_CURVE };
+      options = { ...options, ecdhCurve: tlsDefaults.ecdhCurve };
     }
     const rejectUnauthorized = options.rejectUnauthorized;
     if (rejectUnauthorized !== undefined && typeof rejectUnauthorized !== "boolean") {
@@ -598,8 +598,8 @@ function newNativeSecureContext(options, cached = false) {
         minVersion = range[0];
         maxVersion = range[1];
       } else {
-        minVersion = tlsStringToProtocolVersion(optMinVersion ?? DEFAULT_MIN_VERSION);
-        maxVersion = tlsStringToProtocolVersion(optMaxVersion ?? DEFAULT_MAX_VERSION);
+        minVersion = tlsStringToProtocolVersion(optMinVersion ?? tlsDefaults.minVersion);
+        maxVersion = tlsStringToProtocolVersion(optMaxVersion ?? tlsDefaults.maxVersion);
       }
       options = { ...options, minVersion, maxVersion };
     }
@@ -621,8 +621,8 @@ var InternalSecureContext = class SecureContext {
     // process-wide default applies on every construction path (the public
     // createSecureContext(), the connect/TLSSocket path, addContext and
     // setSecureContext), matching Node's secure-context default.
-    if (_defaultCACertificatesOverride !== undefined && (options == null || options.ca == null)) {
-      options = { ...options, ca: _defaultCACertificatesOverride };
+    if (tlsDefaults.ca !== undefined && (options == null || options.ca == null)) {
+      options = { ...options, ca: tlsDefaults.ca };
     }
     if (options) {
       validateSecureContextOptions(options);
@@ -1150,7 +1150,7 @@ function buildSharedCreds(server) {
       allowPartialTrustChain: server.allowPartialTrustChain,
       sessionTimeout: server.sessionTimeout,
       sigalgs: server.sigalgs,
-      ecdhCurve: server.ecdhCurve ?? DEFAULT_ECDH_CURVE,
+      ecdhCurve: server.ecdhCurve ?? tlsDefaults.ecdhCurve,
       passphrase: server.passphrase,
       secureProtocol: server.secureProtocol,
       minVersion: server.minVersion,
@@ -1219,6 +1219,9 @@ function Server(options, secureConnectionListener): void {
   this.addContext = function (hostname, context) {
     if (typeof hostname !== "string") {
       throw new TypeError("hostname must be a string");
+    }
+    if (hostname === "") {
+      throw $ERR_TLS_REQUIRED_SERVER_NAME('"servername" is required parameter for Server.addContext');
     }
     if (!(context instanceof InternalSecureContext)) {
       context = new InternalSecureContext(context, true);
@@ -1308,8 +1311,8 @@ function Server(options, secureConnectionListener): void {
       // InternalSecureContext, so without this an mTLS server would verify
       // client certificates against the bundled roots instead of the
       // overridden defaults.
-      if (_defaultCACertificatesOverride !== undefined && ca == null) {
-        ca = _defaultCACertificatesOverride;
+      if (tlsDefaults.ca !== undefined && ca == null) {
+        ca = tlsDefaults.ca;
       }
       // PKCS#12-embedded CAs are stashed separately so createSecureContext can
       // extend (not replace) the default trust set via addCACert. The server
@@ -1440,7 +1443,7 @@ function Server(options, secureConnectionListener): void {
         allowPartialTrustChain: this.allowPartialTrustChain,
         sessionTimeout: this.sessionTimeout ?? 0,
         sigalgs: this.sigalgs,
-        ecdhCurve: this.ecdhCurve ?? DEFAULT_ECDH_CURVE,
+        ecdhCurve: this.ecdhCurve ?? tlsDefaults.ecdhCurve,
         passphrase: this.passphrase,
         secureOptions: this.secureOptions,
         rejectUnauthorized: this._rejectUnauthorized,
@@ -1461,9 +1464,9 @@ function Server(options, secureConnectionListener): void {
             minVersion = range[0];
             maxVersion = range[1];
           } else {
-            const min = processed && processed.tls13Only ? "TLSv1.3" : (this.minVersion ?? DEFAULT_MIN_VERSION);
+            const min = processed && processed.tls13Only ? "TLSv1.3" : (this.minVersion ?? tlsDefaults.minVersion);
             minVersion = tlsStringToProtocolVersion(min);
-            maxVersion = tlsStringToProtocolVersion(this.maxVersion ?? DEFAULT_MAX_VERSION);
+            maxVersion = tlsStringToProtocolVersion(this.maxVersion ?? tlsDefaults.maxVersion);
           }
           return { ciphers: processed && processed.cipherList, minVersion, maxVersion };
         })(),
@@ -1517,25 +1520,6 @@ Server.prototype[kSharedCreds] = function () {
 
 function createServer(options, connectionListener) {
   return new Server(options, connectionListener);
-}
-let DEFAULT_ECDH_CURVE = "auto";
-// https://github.com/Jarred-Sumner/uSockets/blob/fafc241e8664243fc0c51d69684d5d02b9805134/src/crypto/openssl.c#L519-L523
-let DEFAULT_MIN_VERSION = "TLSv1.2",
-  DEFAULT_MAX_VERSION = "TLSv1.3";
-
-// Node seeds the protocol-version defaults from its --tls-min-vX.Y /
-// --tls-max-vX.Y CLI flags; the equivalent flags reach us through
-// process.execArgv. The lowest requested minimum and the highest requested
-// maximum win when several are passed, matching node_options precedence.
-{
-  const execArgv = process.execArgv;
-  const hasFlag = (flag: string) => execArgv.includes(flag);
-  if (hasFlag("--tls-min-v1.0")) DEFAULT_MIN_VERSION = "TLSv1";
-  else if (hasFlag("--tls-min-v1.1")) DEFAULT_MIN_VERSION = "TLSv1.1";
-  else if (hasFlag("--tls-min-v1.2")) DEFAULT_MIN_VERSION = "TLSv1.2";
-  else if (hasFlag("--tls-min-v1.3")) DEFAULT_MIN_VERSION = "TLSv1.3";
-  if (hasFlag("--tls-max-v1.3")) DEFAULT_MAX_VERSION = "TLSv1.3";
-  else if (hasFlag("--tls-max-v1.2")) DEFAULT_MAX_VERSION = "TLSv1.2";
 }
 
 function normalizeConnectArgs(listArgs) {
@@ -1742,13 +1726,6 @@ function maybeWarnAboutExtraCACerts() {
   }
 }
 
-// Runtime override for the "default" CA certificate set, installed by
-// tls.setDefaultCACertificates(). undefined = no override (use the real
-// bundled/system default). Only affects type "default"/implicit — "bundled",
-// "system" and "extra" are unchanged.
-// https://github.com/nodejs/node/blob/main/lib/internal/tls/secure-context.js
-let _defaultCACertificatesOverride: Array<string> | undefined;
-
 type CACertInput = string | NodeJS.ArrayBufferView;
 // tls.setDefaultCACertificates(certs)
 // https://github.com/nodejs/node/blob/v25.2.1/lib/tls.js#L202
@@ -1783,7 +1760,7 @@ function setDefaultCACertificates(certs: ReadonlyArray<CACertInput>): void {
   if (normalized.length === 0 && snapshot.length > 0) {
     throw $ERR_CRYPTO_OPERATION_FAILED("No valid certificates found in the provided array");
   }
-  _defaultCACertificatesOverride = normalized;
+  tlsDefaults.ca = normalized;
 }
 
 function getCACertificates(type = "default") {
@@ -1791,8 +1768,8 @@ function getCACertificates(type = "default") {
 
   switch (type) {
     case "default":
-      if (_defaultCACertificatesOverride !== undefined) {
-        return _defaultCACertificatesOverride.slice();
+      if (tlsDefaults.ca !== undefined) {
+        return tlsDefaults.ca.slice();
       }
       return cacheDefaultCACertificates();
     case "bundled":
@@ -1847,25 +1824,23 @@ export default {
     setTLSDefaultCiphers(value);
   },
   get DEFAULT_ECDH_CURVE() {
-    return DEFAULT_ECDH_CURVE;
+    return tlsDefaults.ecdhCurve;
   },
   set DEFAULT_ECDH_CURVE(value) {
-    DEFAULT_ECDH_CURVE = value;
+    tlsDefaults.ecdhCurve = value;
   },
-  // Accessors so `tls.DEFAULT_MAX_VERSION = 'TLSv1.2'` reaches the
-  // module-level variables that context construction reads (Node mutates the
-  // exports object the same way).
+  // Accessors, so assigning tls.DEFAULT_*_VERSION (as Node allows) updates the shared defaults.
   get DEFAULT_MAX_VERSION() {
-    return DEFAULT_MAX_VERSION;
+    return tlsDefaults.maxVersion;
   },
   set DEFAULT_MAX_VERSION(value) {
-    DEFAULT_MAX_VERSION = value;
+    tlsDefaults.maxVersion = value;
   },
   get DEFAULT_MIN_VERSION() {
-    return DEFAULT_MIN_VERSION;
+    return tlsDefaults.minVersion;
   },
   set DEFAULT_MIN_VERSION(value) {
-    DEFAULT_MIN_VERSION = value;
+    tlsDefaults.minVersion = value;
   },
   getCiphers,
   setDefaultCACertificates,

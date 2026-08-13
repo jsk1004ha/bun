@@ -1,4 +1,5 @@
 const { isTypedArray, isArrayBuffer } = require("node:util/types");
+const { validateInt32, validateString } = require("internal/validators");
 
 function isPemObject(obj: unknown): obj is { pem: unknown } {
   return $isObject(obj) && "pem" in obj;
@@ -52,6 +53,28 @@ function isValidTLSArray(obj: unknown) {
 // accepts BunFile values (isValidTLSItem), but the message must match Node:
 // https://github.com/nodejs/node/blob/v26.3.0/lib/internal/tls/secure-context.js#L74-L87
 const VALID_TLS_ERROR_MESSAGE_TYPES = "string or an instance of Buffer, TypedArray, or DataView";
+
+const SSL_OP_CIPHER_SERVER_PREFERENCE = 0x00400000;
+
+// Process-wide fallbacks behind tls.DEFAULT_* and setDefaultCACertificates(); `ca` is undefined until one is installed.
+const tlsDefaults: { minVersion: string; maxVersion: string; ecdhCurve: string; ca: Array<string> | undefined } = {
+  minVersion: "TLSv1.2",
+  maxVersion: "TLSv1.3",
+  ecdhCurve: "auto",
+  ca: undefined,
+};
+
+// Seeded from Node's --tls-{min,max}-vX.Y flags like Node does: the lowest minimum and highest maximum given win.
+{
+  const execArgv = process.execArgv;
+  const hasFlag = (flag: string) => execArgv.includes(flag);
+  if (hasFlag("--tls-min-v1.0")) tlsDefaults.minVersion = "TLSv1";
+  else if (hasFlag("--tls-min-v1.1")) tlsDefaults.minVersion = "TLSv1.1";
+  else if (hasFlag("--tls-min-v1.2")) tlsDefaults.minVersion = "TLSv1.2";
+  else if (hasFlag("--tls-min-v1.3")) tlsDefaults.minVersion = "TLSv1.3";
+  if (hasFlag("--tls-max-v1.3")) tlsDefaults.maxVersion = "TLSv1.3";
+  else if (hasFlag("--tls-max-v1.2")) tlsDefaults.maxVersion = "TLSv1.2";
+}
 
 // BoringSSL TLS1_x_VERSION constants (from openssl/tls1.h). The native TLS
 // config applies these via SSL_CTX_set_min/max_proto_version.
@@ -178,10 +201,136 @@ function processPfxOptions(options) {
   return out;
 }
 
+// Node.js only requests a client certificate when `requestCert: true`.
+// The uSockets SSL context treats `ca` alone as "verify peer", so without
+// these two flags an `https.Server({ ca })` would reject every client that
+// doesn't present a cert. Mirror tls.Server (net.ts): default `requestCert`
+// to false and, when not requesting, force `rejectUnauthorized` to false so
+// the CA is loaded into the trust store without requiring a client cert.
+function normalizeServerTls(tls) {
+  const requestCert = !!tls.requestCert;
+  tls.requestCert = requestCert;
+  tls.rejectUnauthorized = requestCert ? tls.rejectUnauthorized !== false : false;
+  return tls;
+}
+
+/**
+ * Turns the TLS options Node's http.Server / https.Server accept (in the
+ * constructor, `setSecureContext()` and `addContext()`) into the `tls` object
+ * handed to `Bun.serve`. Every option is validated before anything is built,
+ * so a throw leaves the caller's current config untouched.
+ *
+ * Returns `null` when the options carry no key material (pfx/cert/key/ca)
+ * unless `alwaysTls` is set: a plain http.Server only becomes a TLS server
+ * when given key material, while an https.Server is one regardless.
+ */
+function serverTlsFromOptions(options, alwaysTls: boolean) {
+  let hasKeyMaterial = false;
+  let tlsOptions = options;
+  if (options.pfx) {
+    tlsOptions = processPfxOptions(options);
+    hasKeyMaterial = true;
+  }
+
+  const cert = tlsOptions.cert;
+  if (cert) {
+    throwOnInvalidTLSArray("options.cert", cert);
+    hasKeyMaterial = true;
+  }
+
+  const key = tlsOptions.key;
+  if (key) {
+    throwOnInvalidTLSArray("options.key", key);
+    hasKeyMaterial = true;
+  }
+
+  let ca = tlsOptions.ca;
+  if (ca) {
+    throwOnInvalidTLSArray("options.ca", ca);
+    hasKeyMaterial = true;
+  } else if (ca == null) {
+    // tls.setDefaultCACertificates(); does not make a plain http.Server a TLS one.
+    ca = tlsDefaults.ca;
+  }
+  // PKCS#12-embedded CAs extend the trust set; the server path hands raw
+  // {key, cert, ca} to the native config and has no addCACert hook, so fold
+  // them into `ca` (mirrors tls.Server.setSecureContext).
+  const pfxExtraCAs = tlsOptions._pfxExtraCACerts;
+  if (pfxExtraCAs?.length) {
+    ca = ca == null ? pfxExtraCAs : $isArray(ca) ? [...ca, ...pfxExtraCAs] : [ca, ...pfxExtraCAs];
+  }
+
+  const passphrase = options.passphrase;
+  if (passphrase && typeof passphrase !== "string") {
+    throw $ERR_INVALID_ARG_TYPE("options.passphrase", "string", passphrase);
+  }
+
+  const serverName = options.servername;
+  if (serverName && typeof serverName !== "string") {
+    throw $ERR_INVALID_ARG_TYPE("options.servername", "string", serverName);
+  }
+
+  let secureOptions = options.secureOptions || 0;
+  if (secureOptions && typeof secureOptions !== "number") {
+    throw $ERR_INVALID_ARG_TYPE("options.secureOptions", "number", secureOptions);
+  }
+  // Servers prefer their own cipher order unless told otherwise, as in Node.
+  if (options.honorCipherOrder !== false) secureOptions |= SSL_OP_CIPHER_SERVER_PREFERENCE;
+
+  if (!hasKeyMaterial && !alwaysTls) return null;
+
+  // Same checks as tls.Server#setSecureContext() for the options it shares.
+  const crl = options.crl;
+  if (crl) throwOnInvalidTLSArray("options.crl", crl);
+  const sigalgs = options.sigalgs;
+  if (sigalgs != null) {
+    validateString(sigalgs, "options.sigalgs");
+    if (sigalgs === "") throw $ERR_INVALID_ARG_VALUE("options.sigalgs", sigalgs);
+  }
+  const ecdhCurve = options.ecdhCurve;
+  if (ecdhCurve !== undefined) validateString(ecdhCurve, "options.ecdhCurve");
+  const sessionTimeout = options.sessionTimeout;
+  if (sessionTimeout != null) validateInt32(sessionTimeout, "options.sessionTimeout", 0);
+
+  // secureProtocol wins over minVersion/maxVersion, as in Node; the native layer reads integers, 0 = its default.
+  validateSecureProtocol(options.secureProtocol);
+  let minVersion, maxVersion;
+  const range = secureProtocolToVersionRange(options.secureProtocol);
+  if (range) {
+    minVersion = range[0];
+    maxVersion = range[1];
+  } else {
+    minVersion = tlsStringToProtocolVersion(options.minVersion ?? tlsDefaults.minVersion);
+    maxVersion = tlsStringToProtocolVersion(options.maxVersion ?? tlsDefaults.maxVersion);
+  }
+  return normalizeServerTls({
+    serverName,
+    key,
+    cert,
+    ca,
+    passphrase,
+    secureOptions,
+    minVersion,
+    maxVersion,
+    ciphers: typeof options.ciphers === "string" && options.ciphers ? options.ciphers : undefined,
+    crl,
+    sigalgs,
+    ecdhCurve: ecdhCurve ?? tlsDefaults.ecdhCurve,
+    sessionTimeout: sessionTimeout ?? 0,
+    allowPartialTrustChain: !!options.allowPartialTrustChain,
+    requestCert: options.requestCert,
+    rejectUnauthorized: options.rejectUnauthorized,
+  });
+}
+
 export {
+  SSL_OP_CIPHER_SERVER_PREFERENCE,
+  normalizeServerTls,
   processPfxOptions,
   secureProtocolToVersionRange,
+  serverTlsFromOptions,
   throwOnInvalidTLSArray,
+  tlsDefaults,
   tlsStringToProtocolVersion,
   validateSecureProtocol,
 };
