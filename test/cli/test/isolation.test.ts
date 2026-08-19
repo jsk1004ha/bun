@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { bunEnv, bunExe, isASAN, normalizeBunSnapshot, tempDir } from "harness";
+import { bunEnv, bunExe, isASAN, isWindows, normalizeBunSnapshot, tempDir } from "harness";
 import fs from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
@@ -848,6 +848,12 @@ test.concurrent("--isolate: leaked AbortSignal.timeout does not fire in next fil
 //   sets and plugin callback lists were held through Strong handles, so any
 //   file that created a mock or registered a plugin formed an uncollectable
 //   root -> realm object -> global cycle (#31771's linear growth in practice).
+// - fetch() still uploading a Bun.file() body: the swap only aborts the
+//   transport. The VM keeps running, so the fetch's final progress update
+//   cancels the body sink, which closes the file reader and drops the ref
+//   that roots the stream (and through it the global). The stop used by VM
+//   teardown must not be used here: it unpipes the reader without closing
+//   it, and the progress update then finds nothing left to cancel.
 //
 // Each fixture runs 8 isolated files that leak one handle apiece, forces a
 // full GC, and counts live GlobalObject cells. Pinned globals accumulate
@@ -971,6 +977,34 @@ describe.concurrent("--isolate: collects globals pinned by leaked handles", () =
             build.module("leaked-virtual-module", () => ({ exports: {}, loader: "object" }));
           },
         });
+      `),
+    );
+    expect(await maxLiveGlobals(String(dir))).toBeLessThanOrEqual(4);
+  });
+
+  // The file holds its FIFO open read-write, so the reader gets the bytes but
+  // never EOF, and waits until the target has the first chunk, so the upload
+  // is mid-flight when the file ends.
+  test.skipIf(isWindows)("fetch() left uploading a Bun.file() body", async () => {
+    using dir = tempDir(
+      "isolate-leak-fetch-upload",
+      makeLeakFixture(`
+        import { execFileSync } from "node:child_process";
+        import fs from "node:fs";
+        const fifo = import.meta.path + ".fifo";
+        execFileSync("mkfifo", [fifo]);
+        fs.writeSync(fs.openSync(fifo, "r+"), Buffer.alloc(64, 1));
+        const firstChunk = Promise.withResolvers();
+        const target = Bun.serve({
+          port: 0,
+          async fetch(req) {
+            await req.body.getReader().read();
+            firstChunk.resolve();
+            return new Promise(() => {});
+          },
+        });
+        fetch(target.url, { method: "POST", body: Bun.file(fifo).stream() }).catch(() => {});
+        await firstChunk.promise;
       `),
     );
     expect(await maxLiveGlobals(String(dir))).toBeLessThanOrEqual(4);
