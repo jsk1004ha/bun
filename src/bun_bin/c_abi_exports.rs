@@ -1,6 +1,5 @@
 //! C-ABI entry points that belong to the final binary rather than any
-//! library crate: the process-level panic hook, the OOM crash handler, and
-//! the fatal exit for an event loop that cannot be created.
+//! library crate: the process-level panic hook and the fatal-exit hooks.
 //!
 //! Everything else that used to live here has a real home in `bun_jsc` /
 //! `bun_runtime` and is exported via `generate-host-exports.ts`.
@@ -29,14 +28,9 @@ extern "C" fn Bun__outOfMemory() -> ! {
     bun_core::out_of_memory()
 }
 
-/// Entry point for bun-usockets when `us_create_loop` cannot get a descriptor
-/// the loop needs (`epoll_create1`, `kqueue`, or the wakeup `eventfd`). Every
-/// caller dereferences the new loop, so the failure is fatal either way. An
-/// exhausted descriptor limit is the environment's limit, not a bug, so it
-/// gets the same report and exit code as `main` returning that errno instead
-/// of a crash report. Any other errno is still a crash.
-///
-/// `syscall_name` must be a NUL-terminated string.
+/// Exit for bun-usockets when `us_create_loop` cannot get a descriptor the
+/// loop needs. The descriptor limit is reported like a root error; any other
+/// errno is a crash. `syscall_name` must be NUL-terminated.
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn Bun__loopInitFailed(

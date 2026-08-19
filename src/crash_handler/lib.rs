@@ -1287,8 +1287,6 @@ mod draft {
                 "The current working directory was deleted, so that command didn't work. Please cd into a different directory and try again.",
             );
         } else if matches!(name, b"SystemFdQuotaExceeded" | b"ENFILE") {
-            // Errno errors (`SystemErrno`) are named after the errno; the
-            // `*FdQuotaExceeded` spellings are the variants in `bun_runtime::Error`.
             #[cfg(unix)]
             {
                 let limit = getrlimit_nofile().map(|l| l.rlim_cur);
