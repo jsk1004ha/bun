@@ -28,9 +28,8 @@ extern "C" fn Bun__outOfMemory() -> ! {
     bun_core::out_of_memory()
 }
 
-/// Exit for bun-usockets when `us_create_loop` cannot get a descriptor the
-/// loop needs. The descriptor limit is reported like a root error; any other
-/// errno is a crash. `syscall_name` must be NUL-terminated.
+/// Exit for bun-usockets when `us_create_loop` cannot get a descriptor.
+/// `syscall_name` must be NUL-terminated.
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn Bun__loopInitFailed(
