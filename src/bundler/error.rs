@@ -38,6 +38,9 @@ pub enum Error {
     FormatError,
     #[error("ResolveMessage")]
     ResolveMessage,
+    /// An entry point resolved to a builtin: external, so there is nothing to bundle.
+    #[error("EntryPointIsBuiltin")]
+    EntryPointIsBuiltin,
     #[error("JSError")]
     Js(bun_core::JsError),
     #[error(transparent)]
@@ -123,6 +126,7 @@ impl Error {
             Self::EmptyAST => "EmptyAST",
             Self::FormatError => "FormatError",
             Self::ResolveMessage => "ResolveMessage",
+            Self::EntryPointIsBuiltin => "EntryPointIsBuiltin",
             Self::Js(bun_core::JsError::OutOfMemory) => "OutOfMemory",
             Self::Js(_) => "JSError",
             Self::Sys(e) => <&'static str>::from(e),

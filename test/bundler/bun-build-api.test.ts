@@ -214,18 +214,18 @@ describe("Bun.build", () => {
     }
   });
 
-  // Spawned: on an unfixed bun the "bun:wrap" build takes the whole process down (it reaches the
-  // linker with no entry points) instead of returning a failed build.
-  test("a builtin entry point is a build error", async () => {
+  // Spawned: on an unfixed bun each of these builds takes the whole process down. The entry point
+  // is dropped without an error and the build reaches the linker with no entry points.
+  test("an entry point that cannot be resolved is a build error, not a dropped entry point", async () => {
+    const tooLongForAPath = Buffer.alloc(5000, "x").toString();
     await using proc = Bun.spawn({
       cmd: [
         bunExe(),
         "-e",
         `const results = [];
-         for (const entrypoint of ["bun:wrap", "node:fs"]) {
+         for (const entrypoint of ["bun:wrap", "node:fs", Buffer.alloc(5000, "x").toString()]) {
            const build = await Bun.build({ entrypoints: [entrypoint], target: "bun", throw: false });
            results.push({
-             entrypoint,
              success: build.success,
              outputs: build.outputs.length,
              logs: build.logs.map(log => ({ name: log.name, level: log.level, message: log.message, position: log.position })),
@@ -239,33 +239,15 @@ describe("Bun.build", () => {
     });
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
     expect(stderr).toBe("");
+    const failedWith = (message: string) => ({
+      success: false,
+      outputs: 0,
+      logs: [{ name: "BuildMessage", level: "error", message, position: null }],
+    });
     expect(JSON.parse(stdout)).toEqual([
-      {
-        entrypoint: "bun:wrap",
-        success: false,
-        outputs: 0,
-        logs: [
-          {
-            name: "BuildMessage",
-            level: "error",
-            message: 'Cannot use "bun:wrap" as an entry point: it resolves to a builtin module',
-            position: null,
-          },
-        ],
-      },
-      {
-        entrypoint: "node:fs",
-        success: false,
-        outputs: 0,
-        logs: [
-          {
-            name: "BuildMessage",
-            level: "error",
-            message: 'Cannot use "node:fs" as an entry point: it resolves to a builtin module',
-            position: null,
-          },
-        ],
-      },
+      failedWith('Cannot use "bun:wrap" as an entry point: it resolves to a builtin module'),
+      failedWith('Cannot use "node:fs" as an entry point: it resolves to a builtin module'),
+      failedWith(`ModuleNotFound resolving "${tooLongForAPath}" (entry point)`),
     ]);
     expect(exitCode).toBe(0);
   });

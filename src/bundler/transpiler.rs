@@ -421,17 +421,17 @@ impl<'a> Transpiler<'a> {
         }
     }
 
-    /// A builtin is the only external result an entry point gets. Logged here as `ResolveMessage`.
+    /// An external result here is always a builtin; it is returned as `EntryPointIsBuiltin`.
     fn _resolve_entry_point(&mut self, entry_point: &[u8]) -> crate::Result<resolver::Result> {
         let top_level_dir = self.fs().top_level_dir;
-        let resolve_error = match self.resolver.resolve_with_framework(
+        let err = match self.resolver.resolve_with_framework(
             top_level_dir,
             entry_point,
             bun_ast::ImportKind::EntryPointBuild,
         ) {
             Ok(r) if !r.flags.is_external() => return Ok(r),
-            Ok(_builtin) => None,
-            Err(err) => Some(err),
+            Ok(_builtin) => crate::Error::EntryPointIsBuiltin,
+            Err(err) => err.into(),
         };
 
         // A bare entry point that is not a package (or is a builtin's name) is relative to the cwd.
@@ -454,20 +454,7 @@ impl<'a> Transpiler<'a> {
             }
         }
 
-        match resolve_error {
-            Some(err) => Err(err.into()),
-            None => {
-                self.log_mut().add_error_fmt(
-                    None,
-                    bun_ast::Loc::EMPTY,
-                    format_args!(
-                        "Cannot use {} as an entry point: it resolves to a builtin module",
-                        bun_core::fmt::quote(entry_point)
-                    ),
-                );
-                Err(crate::Error::ResolveMessage)
-            }
-        }
+        Err(err)
     }
 
     /// Resolve an entry-point specifier, busting the directory cache and
@@ -475,16 +462,6 @@ impl<'a> Transpiler<'a> {
     pub fn resolve_entry_point(&mut self, entry_point: &[u8]) -> crate::Result<resolver::Result> {
         match self._resolve_entry_point(entry_point) {
             Ok(r) => Ok(r),
-            // `_resolve_entry_point` logged it; resolving again would log it twice.
-            Err(crate::Error::ResolveMessage) => Err(crate::Error::ResolveMessage),
-            // Nothing that long names a directory whose cache could be stale
-            // (and the join below has a PathBuffer to fit `top_level_dir/entry/..` in).
-            Err(err)
-                if self.fs().top_level_dir.len() + entry_point.len() + 4
-                    > bun_paths::MAX_PATH_BYTES =>
-            {
-                Err(err)
-            }
             Err(err) => {
                 let mut cache_bust_buf = bun_paths::PathBuffer::uninit();
 
@@ -495,6 +472,13 @@ impl<'a> Transpiler<'a> {
                 // disjoint mutable borrows of `cache_bust_buf` across `break`,
                 // so compute `busted` directly instead.
                 let busted: bool = 'name: {
+                    // Nothing that long names a directory whose cache could be stale
+                    // (and the join below has a PathBuffer to fit `top_level_dir/entry/..` in).
+                    if self.fs().top_level_dir.len() + entry_point.len() + 4
+                        > bun_paths::MAX_PATH_BYTES
+                    {
+                        break 'name false;
+                    }
                     if bun_paths::is_absolute(entry_point) {
                         let dir = bun_paths::resolve_path::dirname::<bun_paths::platform::Auto>(
                             entry_point,
@@ -532,25 +516,31 @@ impl<'a> Transpiler<'a> {
 
                 // Only re-query if we previously had something cached.
                 if busted {
-                    match self._resolve_entry_point(entry_point) {
-                        Ok(result) => return Ok(result),
-                        Err(crate::Error::ResolveMessage) => {
-                            return Err(crate::Error::ResolveMessage);
-                        }
-                        // ignore this error, we will print the original error
-                        Err(_) => {}
+                    if let Ok(result) = self._resolve_entry_point(entry_point) {
+                        return Ok(result);
                     }
+                    // ignore this error, we will print the original error
                 }
 
-                self.log_mut().add_error_fmt(
-                    None,
-                    bun_ast::Loc::EMPTY,
-                    format_args!(
-                        "{} resolving \"{}\" (entry point)",
-                        err,
-                        bstr::BStr::new(entry_point)
+                match err {
+                    crate::Error::EntryPointIsBuiltin => self.log_mut().add_error_fmt(
+                        None,
+                        bun_ast::Loc::EMPTY,
+                        format_args!(
+                            "Cannot use {} as an entry point: it resolves to a builtin module",
+                            bun_core::fmt::quote(entry_point)
+                        ),
                     ),
-                );
+                    err => self.log_mut().add_error_fmt(
+                        None,
+                        bun_ast::Loc::EMPTY,
+                        format_args!(
+                            "{} resolving \"{}\" (entry point)",
+                            err,
+                            bstr::BStr::new(entry_point)
+                        ),
+                    ),
+                }
                 Err(err)
             }
         }
