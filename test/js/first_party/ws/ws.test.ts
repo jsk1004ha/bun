@@ -1027,8 +1027,11 @@ describe("server socket close lifecycle", () => {
 
   // Connects a raw TCP client and completes the handshake, so the server side
   // sees exactly the bytes each test writes. `rest` holds any frame bytes that
-  // arrived in the same chunk as the handshake response.
-  async function rawClient(wss: WebSocketServer): Promise<{ socket: ReturnType<typeof connect>; rest: Buffer }> {
+  // arrived in the same chunk as the handshake response. Disposing it destroys
+  // the connection, which also takes the server side socket down.
+  async function rawClient(
+    wss: WebSocketServer,
+  ): Promise<{ socket: ReturnType<typeof connect>; rest: Buffer } & Disposable> {
     const { port } = wss.address() as AddressInfo;
     const socket = connect({ port, host: "127.0.0.1" });
     socket.on("error", () => {});
@@ -1053,7 +1056,7 @@ describe("server socket close lifecycle", () => {
         "Sec-WebSocket-Version: 13\r\n\r\n",
     );
     const rest = await promise;
-    return { socket, rest };
+    return { socket, rest, [Symbol.dispose]: () => socket.destroy() };
   }
 
   // Everything the server writes after the handshake, once it has closed the connection.
@@ -1092,7 +1095,7 @@ describe("server socket close lifecycle", () => {
         });
       });
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       client.socket.write(textFrame);
       expect(await promise).toEqual({
         code: 4000,
@@ -1102,7 +1105,6 @@ describe("server socket close lifecycle", () => {
         bufferedAmount: 4,
         clients: 0,
       });
-      client.socket.destroy();
     } finally {
       wss.close();
     }
@@ -1124,10 +1126,9 @@ describe("server socket close lifecycle", () => {
         });
       });
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       client.socket.write(textFrame);
       expect(await promise).toEqual({ code: 1006, reason: Buffer.alloc(0), readyState: WebSocket.CLOSED });
-      client.socket.destroy();
     } finally {
       wss.close();
     }
@@ -1152,10 +1153,9 @@ describe("server socket close lifecycle", () => {
         });
       });
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       client.socket.write(closeFrame4444);
       expect(await promise).toEqual({ lateSend: "WebSocket is not open: readyState 3 (CLOSED)" });
-      client.socket.destroy();
     } finally {
       wss.close();
     }
@@ -1171,7 +1171,7 @@ describe("server socket close lifecycle", () => {
       const connected = Promise.withResolvers<WebSocket>();
       wss.on("connection", ws => connected.resolve(ws));
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       client.socket.pause();
       const ws = await connected.promise;
 
@@ -1207,7 +1207,6 @@ describe("server socket close lifecycle", () => {
         closed: { code: 4000, reason: Buffer.from("done"), readyState: WebSocket.CLOSED },
         bufferedAmount: 0,
       });
-      client.socket.destroy();
     } finally {
       wss.close();
     }
@@ -1219,7 +1218,7 @@ describe("server socket close lifecycle", () => {
       const connected = Promise.withResolvers<WebSocket>();
       wss.on("connection", ws => connected.resolve(ws));
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       client.socket.pause();
       const ws = await connected.promise;
 
@@ -1252,7 +1251,6 @@ describe("server socket close lifecycle", () => {
         other: [],
         bufferedAmount: 4,
       });
-      client.socket.destroy();
     } finally {
       wss.close();
     }
@@ -1264,7 +1262,7 @@ describe("server socket close lifecycle", () => {
       const connected = Promise.withResolvers<WebSocket>();
       wss.on("connection", ws => connected.resolve(ws));
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       client.socket.pause();
       const ws = await connected.promise;
       expect(ws.bufferedAmount).toBe(0);
@@ -1290,8 +1288,6 @@ describe("server socket close lifecycle", () => {
       await delivered;
 
       expect({ received, bufferedAmount: ws.bufferedAmount }).toEqual({ received: expectedBytes, bufferedAmount: 0 });
-      ws.close();
-      client.socket.destroy();
     } finally {
       wss.close();
     }
@@ -1309,7 +1305,7 @@ describe("server socket close lifecycle", () => {
         ws.close();
       });
 
-      const client = await rawClient(wss);
+      using client = await rawClient(wss);
       const bytes = await wireBytes(client);
       expect({ sends, dataFrames: bytes.subarray(0, 4).toString("hex"), then: bytes[4] }).toEqual({
         sends: ["text ok", "binary ok"],
@@ -1317,7 +1313,6 @@ describe("server socket close lifecycle", () => {
         dataFrames: "81008200",
         then: 0x88,
       });
-      client.socket.destroy();
     } finally {
       wss.close();
     }
