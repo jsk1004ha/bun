@@ -6804,29 +6804,28 @@ pub mod bv2_impl {
                 || ctx.loader == Loader::Html
                 || ctx.loader.is_css();
 
-            let pending = self
+            if let Some(idx) = self
                 .resolve_tasks_waiting_for_import_source_index
                 .get_index(&ctx.source_index.get())
-                .map(|idx| {
-                    self.resolve_tasks_waiting_for_import_source_index
-                        .swap_remove_at(idx)
-                        .1
-                });
-            if let Some(pending) = &pending {
+            {
+                let (_, pending) = self
+                    .resolve_tasks_waiting_for_import_source_index
+                    .swap_remove_at(idx);
                 for to_assign in pending.slice() {
                     if let PendingImport::SourceIndex {
-                        import_record_index,
-                        to_source_index,
+                        to_source_index, ..
                     } = *to_assign
                     {
-                        if save_import_record_source_index
-                            || input_file_loaders[to_source_index.get() as usize].is_css()
+                        if !save_import_record_source_index
+                            && !input_file_loaders[to_source_index.get() as usize].is_css()
                         {
-                            to_assign.apply(
-                                &mut import_records.as_mut_slice()[import_record_index as usize],
-                            );
+                            continue;
                         }
                     }
+                    to_assign.apply(
+                        &mut import_records.as_mut_slice()
+                            [to_assign.import_record_index() as usize],
+                    );
                 }
             }
 
@@ -6834,6 +6833,12 @@ pub mod bv2_impl {
             // so borrowck sees it as disjoint from `self.graph.input_files` above.
             let path_to_source_index_map = &mut self.graph.build_graphs[ctx.target];
             for (i, record) in import_records.as_mut_slice().iter_mut().enumerate() {
+                if record
+                    .flags
+                    .contains(bun_ast::ImportRecordFlags::IS_EXTERNAL)
+                {
+                    continue;
+                }
                 if let Some(source_index) = path_to_source_index_map.get_path(&record.path) {
                     if save_import_record_source_index
                         || input_file_loaders[source_index as usize].is_css()
@@ -6845,18 +6850,6 @@ pub mod bv2_impl {
                         if compare == i as u32 {
                             let _ = path_to_source_index_map.put(ctx.source_path, source_index); // OOM-only Result
                         }
-                    }
-                }
-            }
-
-            // After the map pass: an external path must not be looked up as a module.
-            if let Some(pending) = pending {
-                for to_assign in pending.slice() {
-                    if matches!(to_assign, PendingImport::ExternalPath { .. }) {
-                        to_assign.apply(
-                            &mut import_records.as_mut_slice()
-                                [to_assign.import_record_index() as usize],
-                        );
                     }
                 }
             }
