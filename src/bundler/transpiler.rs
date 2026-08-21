@@ -421,7 +421,7 @@ impl<'a> Transpiler<'a> {
         }
     }
 
-    /// An external result here is always a builtin; it is returned as `EntryPointIsBuiltin`.
+    /// An external result has nothing to bundle. It comes back as the error to log for it.
     fn _resolve_entry_point(&mut self, entry_point: &[u8]) -> crate::Result<resolver::Result> {
         let top_level_dir = self.fs().top_level_dir;
         let err = match self.resolver.resolve_with_framework(
@@ -430,6 +430,8 @@ impl<'a> Transpiler<'a> {
             bun_ast::ImportKind::EntryPointBuild,
         ) {
             Ok(r) if !r.flags.is_external() => return Ok(r),
+            // A data: URL whose MIME type is not code. The only other external result is a builtin.
+            Ok(r) if r.path_pair.primary.is_data_url() => resolver::Error::ModuleNotFound.into(),
             Ok(_builtin) => crate::Error::EntryPointIsBuiltin,
             Err(err) => err.into(),
         };

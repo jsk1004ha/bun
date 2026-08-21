@@ -214,17 +214,27 @@ describe("Bun.build", () => {
     }
   });
 
-  // Spawned: on an unfixed bun each of these builds takes the whole process down. The entry point
-  // is dropped without an error and the build reaches the linker with no entry points.
+  // Spawned: on an unfixed bun the first three builds take the whole process down. The entry point
+  // is dropped without an error and the build reaches the linker with no entry points. The data: URL
+  // is an image, which resolves as external like a builtin does; it used to be emitted as a module
+  // exporting "". It needs a file next to it, because a lone data: entry point fails to open its
+  // "directory" before resolution starts.
   test("an entry point that cannot be resolved is a build error, not a dropped entry point", async () => {
     const tooLongForAPath = Buffer.alloc(5000, "x").toString();
+    const image = "data:image/png;base64,iVBORw0KGgo=";
+    const cases = [
+      ["bun:wrap"],
+      ["node:fs"],
+      [tooLongForAPath],
+      [join(import.meta.dir, "fixtures", "trivial", "index.js"), image],
+    ];
     await using proc = Bun.spawn({
       cmd: [
         bunExe(),
         "-e",
         `const results = [];
-         for (const entrypoint of ["bun:wrap", "node:fs", Buffer.alloc(5000, "x").toString()]) {
-           const build = await Bun.build({ entrypoints: [entrypoint], target: "bun", throw: false });
+         for (const entrypoints of ${JSON.stringify(cases)}) {
+           const build = await Bun.build({ entrypoints, target: "bun", throw: false });
            results.push({
              success: build.success,
              outputs: build.outputs.length,
@@ -248,6 +258,7 @@ describe("Bun.build", () => {
       failedWith('Cannot use "bun:wrap" as an entry point: it resolves to a builtin module'),
       failedWith('Cannot use "node:fs" as an entry point: it resolves to a builtin module'),
       failedWith(`ModuleNotFound resolving "${tooLongForAPath}" (entry point)`),
+      failedWith(`ModuleNotFound resolving "${image}" (entry point)`),
     ]);
     expect(exitCode).toBe(0);
   });
