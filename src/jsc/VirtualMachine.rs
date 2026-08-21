@@ -1151,7 +1151,7 @@ impl VirtualMachine {
     /// Whether `import.meta.hot` exists: `bun --hot`, main VM only (workers
     /// inherit `hot_reload` but are never reloaded).
     pub fn is_hot_reload_enabled(&self) -> bool {
-        self.hot_reload == HOT_RELOAD_HOT && self.is_main_thread()
+        self.hot_reload == HotReload::Hot && self.is_main_thread()
     }
 
     pub fn is_inspector_enabled(&self) -> bool {

@@ -625,8 +625,8 @@ public:
 
     static ImportMetaHotPrototype* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
     {
-        auto* structure = Structure::create(vm, globalObject, globalObject->objectPrototype(), TypeInfo(ObjectType, StructureFlags), info());
-        auto* prototype = new (NotNull, JSC::allocateCell<ImportMetaHotPrototype>(vm)) ImportMetaHotPrototype(vm, structure);
+        auto* structure = Bun::createClassStructure(vm, globalObject, globalObject->objectPrototype(), JSC::TypeInfo(ObjectType, StructureFlags), info());
+        auto* prototype = new (NotNull, Bun::allocatePlainObjectCell(vm, sizeof(ImportMetaHotPrototype))) ImportMetaHotPrototype(vm, structure);
         prototype->finishCreation(vm);
         return prototype;
     }
@@ -647,8 +647,8 @@ private:
     void finishCreation(JSC::VM& vm)
     {
         Base::finishCreation(vm);
-        reifyStaticProperties(vm, info(), ImportMetaHotPrototypeValues, *this);
-        JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+        Bun::reifyStaticPropertyTable(vm, info(), ImportMetaHotPrototypeValues, *this);
+        Bun::putToStringTagWithoutTransition(vm, this, info());
     }
 };
 

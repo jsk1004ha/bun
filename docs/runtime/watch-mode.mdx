@@ -102,6 +102,11 @@ bun --hot server.ts
 Starting from the entrypoint (`server.ts` in this example), Bun builds a registry of all imported source files (excluding those in `node_modules`) and watches them for changes. When a file changes, Bun performs a "soft reload". Bun re-evaluates all files, but global state (notably, the `globalThis` object) persists.
 
 ```ts title="server.ts" icon="/icons/typescript.svg"
+// make TypeScript happy
+declare global {
+  var count: number;
+}
+
 globalThis.count ??= 0;
 console.log(`Reloaded ${globalThis.count} times`);
 globalThis.count++;
